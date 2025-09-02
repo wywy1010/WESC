@@ -1,0 +1,37 @@
+#include <Servo.h>
+
+const int LEFT_MOTOR_PIN = 9;
+const int RIGHT_MOTOR_PIN = 10;
+Servo leftMotor, rightMotor;
+
+void setup() {
+  Serial.begin(9600);
+  leftMotor.attach(LEFT_MOTOR_PIN);
+  rightMotor.attach(RIGHT_MOTOR_PIN);
+  leftMotor.write(90); // 초기 정지
+  rightMotor.write(90);
+  Serial.println("Arduino is ready for angle commands.");
+}
+
+void loop() {
+  if (Serial.available() > 0) {
+    String command_str = Serial.readStringUntil('\n');
+    
+    // "M,110,80" 형식의 명령어를 받아서 처리
+    if (command_str.startsWith("M")) {
+      String values_str = command_str.substring(2);
+      int commaIndex = values_str.indexOf(',');
+      
+      if (commaIndex > 0) {
+        String left_val_str = values_str.substring(0, commaIndex);
+        String right_val_str = values_str.substring(commaIndex + 1);
+        
+        int left_angle = left_val_str.toInt();
+        int right_angle = right_val_str.toInt();
+        
+        leftMotor.write(left_angle);
+        rightMotor.write(right_angle);
+      }
+    }
+  }
+}
