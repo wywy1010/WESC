@@ -1,13 +1,10 @@
-# admotor_final_corrected_v3.py
-
-
-# --- 1. 라이브러리 로드 ---
+# 1. 라이브러리 로드
 import cv2, time, numpy as np, serial, os
 import subprocess as sp
 from ultralytics import YOLO
 
 
-# --- 2. 아두이노와 시리얼 통신 설정 ---
+# 2. 아두이노와 시리얼 통신 설정
 try:
     arduino = serial.Serial("/dev/ttyUSB0", 9600, timeout=1)
     time.sleep(2)
@@ -17,7 +14,7 @@ except Exception as e:
     exit()
 
 
-# --- 3. 파라미터 정의 (admotor007.py 기준 하드코딩) ---
+# 3. 파라미터 정의
 ROI_START_Y_RATIO = 0.54
 LANE_FILTER_HSV = {"s_low": 0, "s_high": 255, "v_low": 203}
 SLOPE_MIN = 0.9
@@ -45,10 +42,8 @@ if fps == 0:
 print(f"디버깅: 웹캠 해상도: {width}x{height}, FPS: {fps}")
 
 
-# --- FFmpeg 프로세스 설정 (UDP 스트리밍) ---
-# !!! 중요 !!!
-# 아래 CLIENT_IP를 스트리밍을 수신할 노트북(PC)의 IP 주소로 변경하세요.
-CLIENT_IP = "192.168.1.100" # 예시 IP
+# FFmpeg 프로세스 설정
+CLIENT_IP = "172.20.10.2" # 수신할 노트북의 IP 주소
 
 
 command = [
@@ -60,29 +55,28 @@ command = [
 ]
 proc = sp.Popen(command, stdin=sp.PIPE)
 print(f"\n[알림] FFmpeg UDP 스트리밍이 시작되었습니다. ({CLIENT_IP}:5000)")
-print("수신측 PC의 VLC 등에서 sdp 파일을 열어 스트림을 확인하세요.\n")
+print("수신측 PC에서 sdp 파일을 열어 스트림을 확인하세요.\n")
 
 
 
 
-# 5. 원근 변환 설정 (admotor11-2.py의 기본값 사용)
-src_pts = np.float32([[214, 99], [379, 109], [590, 473], [-25, 467]])
-road_width_m = 0.18
-road_length_m = 0.51
-# !!! [수정됨] 거리 계산이 반대로 되는 문제를 해결하기 위해 y좌표 반전 !!!
+# 5. 원근 변환 설정
+src_pts = np.float32([[139, 73], [444, 74], [1179, 447], [-666, 455]])
+road_width_m = 0.59
+road_length_m = 1.09
 dst_pts = np.float32([[0, road_length_m], [road_width_m, road_length_m], [road_width_m, 0], [0, 0]])
 M = cv2.getPerspectiveTransform(src_pts, dst_pts)
 print("디버깅: 원근 변환 행렬 생성 완료.")
 
 
-# --- 6. 주행 로직 및 상태 관련 설정 ---
-# !!! [수정됨] 실제 측정한 차량 속도 값으로 변경 !!!
-TARGET_SPEED_MS = 0.13125
-TTC_THRESHOLD_S = 3.5
+# 6. 주행 로직 및 상태 관련 설정
+#b실제 측정한 차량 속도 값값
+TARGET_SPEED_MS = 0.136
+TTC_THRESHOLD_S = 1.0
 LANE_TARGET_OFFSET_RATIO = 0.1
 EVASION_DURATION_STEP1 = 1.0
-EVASION_DURATION_STEP2 = 2.0
-EVASION_DURATION_STEP3 = 1.0
+EVASION_DURATION_STEP2 = 1.55
+EVASION_DURATION_STEP3 = 1.2
 
 
 LANE_KEEPING, EVASION = 'LANE_KEEPING', 'EVASION'
@@ -90,11 +84,11 @@ EVASION_STEP_1, EVASION_STEP_2, EVASION_STEP_3 = 1, 2, 3
 driving_mode, evasion_step, evasion_timer = LANE_KEEPING, 0, 0
 
 
-LANE_KEEP_L_ANGLE, LANE_KEEP_R_ANGLE = 105, 78
+LANE_KEEP_L_ANGLE, LANE_KEEP_R_ANGLE = 105, 83
 STOP_L_ANGLE, STOP_R_ANGLE = 90, 90
 
 
-# --- 7. 함수 정의 ---
+# 7. 함수 정의
 def drive_angles(left_angle, right_angle):
     command = f"M,{int(left_angle)},{int(right_angle)}\n"
     arduino.write(command.encode())
@@ -144,7 +138,7 @@ def process_lanes_improved(img):
     return best_left_line, best_right_line, roi_frame
 
 
-# --- 8. 메인 루프 ---
+# 8. 메인 루프
 jetson_control_active = False
 print("="*40 + "\n초기 상태: [MANUAL CONTROL]\n스페이스바를 눌러 [AUTO CONTROL] 모드로 전환하세요.\n" + "="*40)
 
@@ -215,22 +209,22 @@ try:
                 else:
                     final_l_angle, final_r_angle = LANE_KEEP_L_ANGLE, LANE_KEEP_R_ANGLE
                     if abs(lane_dev) > 0.15:
-                        correction_angle = int(lane_dev * 25)
+                        correction_angle = int(lane_dev * 15)
                         final_l_angle += correction_angle
                         final_r_angle += correction_angle
                     drive_angles(final_l_angle, final_r_angle)
            
             elif driving_mode == EVASION:
                 if evasion_step == EVASION_STEP_1:
-                    drive_angles(110, 80)
+                    drive_angles(120, 80)
                     if time.time() - evasion_timer > EVASION_DURATION_STEP1:
                         evasion_step = EVASION_STEP_2; evasion_timer = time.time()
                 elif evasion_step == EVASION_STEP_2:
-                    drive_angles(105, 75)
+                    drive_angles(105, 83)
                     if time.time() - evasion_timer > EVASION_DURATION_STEP2:
                         evasion_step = EVASION_STEP_3; evasion_timer = time.time()
                 elif evasion_step == EVASION_STEP_3:
-                    drive_angles(100, 80)
+                    drive_angles(100, 70)
                     if time.time() - evasion_timer > EVASION_DURATION_STEP3:
                         driving_mode = LANE_KEEPING; print("[상태] 회피 완료.")
        
@@ -247,7 +241,7 @@ try:
         control_color = (0, 255, 0) if jetson_control_active else (0, 165, 255)
         action_state = driving_mode if jetson_control_active else "N/A"
         if jetson_control_active and driving_mode == EVASION: action_state = f"EVASION_{evasion_step}"
-        status_text = f"Mode:{control_mode_text} | L_Dev:{lane_dev:.2f} | Action:{action_state}"
+        status_text = f"Mode:{control_mode_text} | Action:{action_state} | TTC: {min_ttc:.1f}s"
         cv2.putText(disp, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, control_color, 2)
         cv2.imshow("Final Autonomous Drive", disp)
 
@@ -283,4 +277,6 @@ finally:
     proc.wait()
    
     print("모든 자원 해제 완료.")
+
+
 
