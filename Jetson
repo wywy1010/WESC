@@ -1,8 +1,13 @@
-# 1. 라이브러리 로드
-import cv2, time, numpy as np, serial, json, os
+# admotor_final_corrected_v3.py
+
+
+# --- 1. 라이브러리 로드 ---
+import cv2, time, numpy as np, serial, os
+import subprocess as sp
 from ultralytics import YOLO
 
-# 2. 아두이노와 시리얼 통신 설정
+
+# --- 2. 아두이노와 시리얼 통신 설정 ---
 try:
     arduino = serial.Serial("/dev/ttyUSB0", 9600, timeout=1)
     time.sleep(2)
@@ -11,65 +16,89 @@ except Exception as e:
     print(f"디버깅 오류: 아두이노와 연결할 수 없습니다: {e}")
     exit()
 
-# 3. 설정 파일 로드 및 파라미터 정의
-CONFIG_FILE = "tuning_config.json"
-config = {}
-if os.path.exists(CONFIG_FILE):
-    print(f"설정 파일 '{CONFIG_FILE}'을 발견했습니다. 튜닝 값을 로드합니다.")
-    with open(CONFIG_FILE, "r") as f:
-        config = json.load(f)
-else:
-    print(f"설정 파일 '{CONFIG_FILE}'이 없습니다. 코드에 지정된 기본값을 사용합니다.")
 
-# 차선 탐지 파라미터
-ROI_START_Y_RATIO = config.get('roi_start_y_ratio', 0.34)
-v_low = config.get('v_low', 222)
-LANE_FILTER_HSV = {"s_low": 0, "s_high": 63, "v_low": v_low}
-SLOPE_MIN = config.get('slope_min', 0.3)
-SLOPE_MAX = config.get('slope_max', 2.5)
-CENTER_OFFSET = config.get('center_offset', 81)
-CANNY_LOW, CANNY_HIGH = 51, 150
+# --- 3. 파라미터 정의 (admotor007.py 기준 하드코딩) ---
+ROI_START_Y_RATIO = 0.54
+LANE_FILTER_HSV = {"s_low": 0, "s_high": 255, "v_low": 203}
+SLOPE_MIN = 0.9
+SLOPE_MAX = 3.0
+CENTER_OFFSET = 81
+CANNY_LOW, CANNY_HIGH = 50, 150
 HOUGH_THRESH, HOUGH_MIN_LEN, HOUGH_MAX_GAP = 40, 35, 85
+
 
 # 4. 카메라 및 YOLO 모델 설정
 model = YOLO("yolov8n.pt")
 cap = cv2.VideoCapture(0)
 
+
 if not cap.isOpened():
     print("디버깅 오류: 웹캠을 열 수 없습니다.")
     exit()
 
+
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-print(f"디버깅: 웹캠 해상도: {width}x{height}")
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+if fps == 0:
+    fps = 30
+print(f"디버깅: 웹캠 해상도: {width}x{height}, FPS: {fps}")
 
-# 5. 원근 변환 설정
-src_pts = np.float32(config.get('src_pts', [[214, 99], [379, 109], [590, 473], [-25, 467]]))
-road_width_m = config.get('road_width_m', 0.18)
-road_length_m = config.get('road_length_m', 0.51)
-dst_pts = np.float32([[0, 0], [road_width_m, 0], [road_width_m, road_length_m], [0, road_length_m]])
+
+# --- FFmpeg 프로세스 설정 (UDP 스트리밍) ---
+# !!! 중요 !!!
+# 아래 CLIENT_IP를 스트리밍을 수신할 노트북(PC)의 IP 주소로 변경하세요.
+CLIENT_IP = "192.168.1.100" # 예시 IP
+
+
+command = [
+    "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
+    "-pix_fmt", "bgr24", "-s", f"{width}x{height}", "-r", str(fps),
+    "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    "-preset", "veryfast", "-b:v", "2M", "-maxrate", "2M",
+    "-an", "-f", "rtp", f"udp://{CLIENT_IP}:5000",
+]
+proc = sp.Popen(command, stdin=sp.PIPE)
+print(f"\n[알림] FFmpeg UDP 스트리밍이 시작되었습니다. ({CLIENT_IP}:5000)")
+print("수신측 PC의 VLC 등에서 sdp 파일을 열어 스트림을 확인하세요.\n")
+
+
+
+
+# 5. 원근 변환 설정 (admotor11-2.py의 기본값 사용)
+src_pts = np.float32([[214, 99], [379, 109], [590, 473], [-25, 467]])
+road_width_m = 0.18
+road_length_m = 0.51
+# !!! [수정됨] 거리 계산이 반대로 되는 문제를 해결하기 위해 y좌표 반전 !!!
+dst_pts = np.float32([[0, road_length_m], [road_width_m, road_length_m], [road_width_m, 0], [0, 0]])
 M = cv2.getPerspectiveTransform(src_pts, dst_pts)
 print("디버깅: 원근 변환 행렬 생성 완료.")
 
-# 6. 주행 로직 및 상태 관련 설정
-TARGET_SPEED_MS = 0.8
+
+# --- 6. 주행 로직 및 상태 관련 설정 ---
+# !!! [수정됨] 실제 측정한 차량 속도 값으로 변경 !!!
+TARGET_SPEED_MS = 0.13125
 TTC_THRESHOLD_S = 3.5
 LANE_TARGET_OFFSET_RATIO = 0.1
 EVASION_DURATION_STEP1 = 1.0
 EVASION_DURATION_STEP2 = 2.0
 EVASION_DURATION_STEP3 = 1.0
 
+
 LANE_KEEPING, EVASION = 'LANE_KEEPING', 'EVASION'
 EVASION_STEP_1, EVASION_STEP_2, EVASION_STEP_3 = 1, 2, 3
 driving_mode, evasion_step, evasion_timer = LANE_KEEPING, 0, 0
 
+
 LANE_KEEP_L_ANGLE, LANE_KEEP_R_ANGLE = 105, 78
 STOP_L_ANGLE, STOP_R_ANGLE = 90, 90
 
-# 7. 함수 정의
+
+# --- 7. 함수 정의 ---
 def drive_angles(left_angle, right_angle):
     command = f"M,{int(left_angle)},{int(right_angle)}\n"
     arduino.write(command.encode())
+
 
 def get_bottom_x(line, roi_height):
     x1, y1, x2, y2 = line[0]
@@ -80,18 +109,19 @@ def get_bottom_x(line, roi_height):
     x = m * y + b
     return int(x)
 
+
 def process_lanes_improved(img):
     roi_start_y = int(img.shape[0] * ROI_START_Y_RATIO)
     roi_frame = img[roi_start_y:, :]
     roi_width = roi_frame.shape[1]
-    
+   
     hsv = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2HSV)
     lower_white = np.array([0, LANE_FILTER_HSV['s_low'], LANE_FILTER_HSV['v_low']])
     upper_white = np.array([180, LANE_FILTER_HSV['s_high'], 255])
     white_mask = cv2.inRange(hsv, lower_white, upper_white)
     edges = cv2.Canny(white_mask, CANNY_LOW, CANNY_HIGH)
     lines = cv2.HoughLinesP(edges, 1, np.pi/180, HOUGH_THRESH, minLineLength=HOUGH_MIN_LEN, maxLineGap=HOUGH_MAX_GAP)
-    
+   
     left_lines, right_lines = [], []
     if lines is not None:
         for line in lines:
@@ -104,33 +134,63 @@ def process_lanes_improved(img):
                 elif slope > 0 and x1 > roi_width / 2 - CENTER_OFFSET:
                     right_lines.append(line)
 
+
     best_left_line, best_right_line = None, None
     if left_lines:
         best_left_line = max(left_lines, key=lambda line: get_bottom_x(line, roi_frame.shape[0]))
     if right_lines:
         best_right_line = min(right_lines, key=lambda line: get_bottom_x(line, roi_frame.shape[0]))
-        
+       
     return best_left_line, best_right_line, roi_frame
 
-# 8. 메인 루프
-jetson_control_active = False # 자동/수동 제어 변수
+
+# --- 8. 메인 루프 ---
+jetson_control_active = False
 print("="*40 + "\n초기 상태: [MANUAL CONTROL]\n스페이스바를 눌러 [AUTO CONTROL] 모드로 전환하세요.\n" + "="*40)
+
 
 try:
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
-        
+       
+        # 1. 객체 탐지 및 TTC 계산
         results = model.track(frame, persist=True, imgsz=320, conf=0.5, tracker="bytetrack.yaml", verbose=False)[0]
         min_ttc = float('inf')
+       
         if results.boxes.id is not None:
-            # (객체 처리 코드)
-            pass
+            boxes_xyxy = results.boxes.xyxy.cpu().numpy().astype(int)
+            class_ids = results.boxes.cls.cpu().numpy().astype(int)
+           
+            for i in range(len(boxes_xyxy)):
+                x1, y1, x2, y2 = boxes_xyxy[i]
+               
+                if model.names[class_ids[i]] not in ["cup", "bottle"]:
+                    continue
+               
+                bottom_center_x = (x1 + x2) // 2
+                bottom_center_y = y2
+                pts_pixel = np.float32([[[bottom_center_x, bottom_center_y]]])
+                pts_real_world = cv2.perspectiveTransform(pts_pixel, M)
 
+
+                if pts_real_world is not None:
+                    distance_m = pts_real_world[0][0][1]
+                    if distance_m < 0: continue
+                   
+                    ttc = distance_m / TARGET_SPEED_MS if TARGET_SPEED_MS > 0 else float('inf')
+                    if ttc < min_ttc:
+                        min_ttc = ttc
+                   
+                    info_text = f"Dist:{distance_m:.2f}m TTC:{ttc:.2f}s"
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                    cv2.putText(frame, info_text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+
+        # 2. 차선 탐지
         closest_left, closest_right, roi_frame_for_lane = process_lanes_improved(frame)
         lane_dev = 0.0
-        
-        #  한쪽 차선 인식 로직
+       
         if closest_left is not None and closest_right is not None:
             left_x = get_bottom_x(closest_left, roi_frame_for_lane.shape[0])
             right_x = get_bottom_x(closest_right, roi_frame_for_lane.shape[0])
@@ -145,22 +205,21 @@ try:
             target_x = roi_frame_for_lane.shape[1] * (0.5 + LANE_TARGET_OFFSET_RATIO)
             lane_dev = (right_x - target_x) / (roi_frame_for_lane.shape[1] / 2)
 
-        # 자동/수동 제어(jetson_control_active) 로직
+
+        # 3. 주행 판단 및 제어
         if jetson_control_active:
             if driving_mode == LANE_KEEPING:
                 if min_ttc < TTC_THRESHOLD_S:
                     driving_mode = EVASION; evasion_step = EVASION_STEP_1; evasion_timer = time.time()
-                    print(f"[!!!] TTC {min_ttc:.2f}초! [장애물 회피 모드]로 전환")
+                    print(f"[!!!] TTC {min_ttc:.2f}초! [장애물 회피 모드]로 전환!")
                 else:
                     final_l_angle, final_r_angle = LANE_KEEP_L_ANGLE, LANE_KEEP_R_ANGLE
                     if abs(lane_dev) > 0.15:
-                        # 조향 민감도는 admotor11.py의 '25'를 따름
                         correction_angle = int(lane_dev * 25)
                         final_l_angle += correction_angle
                         final_r_angle += correction_angle
                     drive_angles(final_l_angle, final_r_angle)
-            
-            # 장애물 회피 로직
+           
             elif driving_mode == EVASION:
                 if evasion_step == EVASION_STEP_1:
                     drive_angles(110, 80)
@@ -174,7 +233,8 @@ try:
                     drive_angles(100, 80)
                     if time.time() - evasion_timer > EVASION_DURATION_STEP3:
                         driving_mode = LANE_KEEPING; print("[상태] 회피 완료.")
-        
+       
+        # 4. 시각화 및 스트리밍
         disp = frame.copy()
         significant_lanes = [l for l in [closest_left, closest_right] if l is not None]
         if significant_lanes:
@@ -182,7 +242,7 @@ try:
             for line in significant_lanes:
                 x1, y1, x2, y2 = line[0]
                 cv2.line(disp, (x1, y1 + roi_start_y), (x2, y2 + roi_start_y), (0, 0, 255), 4)
-        
+       
         control_mode_text = "AUTO" if jetson_control_active else "MANUAL"
         control_color = (0, 255, 0) if jetson_control_active else (0, 165, 255)
         action_state = driving_mode if jetson_control_active else "N/A"
@@ -190,14 +250,25 @@ try:
         status_text = f"Mode:{control_mode_text} | L_Dev:{lane_dev:.2f} | Action:{action_state}"
         cv2.putText(disp, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, control_color, 2)
         cv2.imshow("Final Autonomous Drive", disp)
-        
-        # 스페이스바를 이용한 수동/자동 전환 로직
+
+
+        try:
+            proc.stdin.write(disp.tobytes())
+        except BrokenPipeError:
+            print("오류: FFmpeg 프로세스와의 파이프가 끊어졌습니다. 스트리밍을 중단합니다.")
+            break
+       
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q') or key == 27: break
         elif key == 32:
             jetson_control_active = not jetson_control_active
-            if jetson_control_active: print("\n[AUTO CONTROL] 모드 활성화")
-            else: print("\n[MANUAL CONTROL] 모드 활성화"); drive_angles(STOP_L_ANGLE, STOP_R_ANGLE)
+            if jetson_control_active: print("\n[AUTO CONTROL] 모드 활성화!")
+            else: print("\n[MANUAL CONTROL] 모드 활성화!"); drive_angles(STOP_L_ANGLE, STOP_R_ANGLE)
+
+
+except Exception as e:
+    print(f"메인 루프에서 예외 발생: {e}")
+
 
 finally:
     print("프로그램 종료. 마지막으로 모터를 정지합니다.")
@@ -205,5 +276,11 @@ finally:
     cap.release()
     cv2.destroyAllWindows()
     arduino.close()
+   
+    if proc.stdin:
+        proc.stdin.close()
+    proc.terminate()
+    proc.wait()
+   
     print("모든 자원 해제 완료.")
 
