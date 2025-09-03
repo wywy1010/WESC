@@ -1,37 +1,123 @@
+// 서보모터 라이브러리를 포함합니다.
 #include <Servo.h>
 
-const int LEFT_MOTOR_PIN = 9;
-const int RIGHT_MOTOR_PIN = 10;
-Servo leftMotor, rightMotor;
+
+// --- 설정 값 ---
+// 서보모터가 연결된 아두이노 핀 번호
+const int LEFT_SERVO_PIN = 9;
+const int RIGHT_SERVO_PIN = 10;
+
+
+// [🔄 수정된 부분] 기본 직진 속도 (젯슨 나노의 LANE_KEEP 값과 일치시키는 것을 추천)
+const int LEFT_FORWARD_SPEED = 90;
+const int RIGHT_FORWARD_SPEED = 90;
+
+
+// 서보모터 정지 값
+const int STOP_SPEED = 90;
+
+
+// [🔄 추가된 부분] 젯슨 나노의 마지막 신호를 받은 후 기본 직진 모드로 돌아가기까지의 시간 (밀리초)
+const unsigned long TIMEOUT_MS = 1000; // 1초
+
+
+// --- 전역 변수 ---
+Servo leftWheel;
+Servo rightWheel;
+
+
+String serialCommand = "";
+bool commandComplete = false;
+
+
+// [🔄 추가된 부분] 마지막으로 명령을 수신한 시간을 기록할 변수
+unsigned long lastCommandTime = 0;
+
+
+
 
 void setup() {
   Serial.begin(9600);
-  leftMotor.attach(LEFT_MOTOR_PIN);
-  rightMotor.attach(RIGHT_MOTOR_PIN);
-  leftMotor.write(90); // 초기 정지
-  rightMotor.write(90);
-  Serial.println("Arduino is ready for angle commands.");
+  Serial.println("Arduino Ready. Default mode: Move Forward.");
+
+
+  leftWheel.attach(LEFT_SERVO_PIN);
+  rightWheel.attach(RIGHT_SERVO_PIN);
+
+
+  // 시작 시 안전을 위해 정지
+  leftWheel.write(STOP_SPEED);
+  rightWheel.write(STOP_SPEED);
+  delay(500);
+
+
+  // 마지막 명령 시간을 현재로 초기화 (시작 직후 바로 직진 시작)
+  lastCommandTime = millis();
+ 
+  serialCommand.reserve(32);
 }
 
+
 void loop() {
-  if (Serial.available() > 0) {
-    String command_str = Serial.readStringUntil('\n');
-    
-    // "M,110,80" 형식의 명령어를 받아서 처리
-    if (command_str.startsWith("M")) {
-      String values_str = command_str.substring(2);
-      int commaIndex = values_str.indexOf(',');
-      
-      if (commaIndex > 0) {
-        String left_val_str = values_str.substring(0, commaIndex);
-        String right_val_str = values_str.substring(commaIndex + 1);
-        
-        int left_angle = left_val_str.toInt();
-        int right_angle = right_val_str.toInt();
-        
-        leftMotor.write(left_angle);
-        rightMotor.write(right_angle);
-      }
+  // 젯슨 나노로부터 명령어가 완전히 수신되었다면
+  if (commandComplete) {
+    // 명령어를 해석하고 모터를 제어
+    parseAndExecuteCommand();
+
+
+    // [🔄 추가된 부분] 마지막 명령 수신 시간을 현재 시간으로 갱신
+    lastCommandTime = millis();
+
+
+    // 다음 명령어를 위해 변수 초기화
+    serialCommand = "";
+    commandComplete = false;
+  }
+
+
+  // [🔄 추가된 부분] 마지막 명령을 받은 지 TIMEOUT_MS 시간(1초)이 지났는지 확인
+  if (millis() - lastCommandTime > TIMEOUT_MS) {
+    // 1초 이상 신호가 없으면 기본 직진 모드로 전환
+    moveForward();
+  }
+}
+
+
+// 젯슨 나노로부터 받은 신호를 처리하는 부분 (수정 없음)
+void serialEvent() {
+  while (Serial.available()) {
+    char inChar = (char)Serial.read();
+    if (inChar != '\n') {
+      serialCommand += inChar;
+    } else {
+      commandComplete = true;
     }
   }
 }
+
+
+// 젯슨 나노의 명령을 해석하는 부분 (수정 없음)
+void parseAndExecuteCommand() {
+  if (serialCommand.startsWith("M")) {
+    int firstComma = serialCommand.indexOf(',');
+    int secondComma = serialCommand.indexOf(',', firstComma + 1);
+    if (firstComma > 0 && secondComma > 0) {
+      int leftAngle = serialCommand.substring(firstComma + 1, secondComma).toInt();
+      int rightAngle = serialCommand.substring(secondComma + 1).toInt();
+      leftWheel.write(leftAngle);
+      rightWheel.write(rightAngle);
+    }
+  }
+}
+
+
+// [🔄 추가된 부분] 기본 직진 함수
+void moveForward() {
+  leftWheel.write(LEFT_FORWARD_SPEED);
+  rightWheel.write(RIGHT_FORWARD_SPEED);
+}
+
+
+
+
+
